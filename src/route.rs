@@ -51,13 +51,27 @@ impl Route {
         self
     }
 
-    /// Nest a `Endpoint` to the specified path.
+    /// Nest a `Endpoint` to the specified path and strip the prefix.
     #[must_use]
-    pub fn nest(mut self, path: &str, ep: impl IntoEndpoint) -> Self {
+    pub fn nest(self, path: &str, ep: impl IntoEndpoint) -> Self {
+        self.internal_nest(path, ep, true)
+    }
+
+    /// Nest a `Endpoint` to the specified path, but do not strip the prefix.
+    #[must_use]
+    pub fn nest_no_strip(self, path: &str, ep: impl IntoEndpoint) -> Self {
+        self.internal_nest(path, ep, false)
+    }
+
+    /// Nest a `Endpoint` to the specified path.
+    pub fn internal_nest(mut self, path: &str, ep: impl IntoEndpoint, strip: bool) -> Self {
         let ep = Arc::new(ep.into_endpoint());
         let path = path.trim_end_matches('/');
 
-        struct Nest<T>(T);
+        struct Nest<T> {
+            inner: T,
+            prefix: Option<String>,
+        }
 
         #[async_trait::async_trait]
         impl<E: Endpoint> Endpoint for Nest<E> {
@@ -69,11 +83,14 @@ impl Route {
                 assert_eq!(name, "--poem-rest");
                 req.set_uri(
                     http::uri::Builder::new()
-                        .path_and_query(value)
+                        .path_and_query(match &self.prefix {
+                            Some(prefix) => format!("{}/{}", prefix, value),
+                            None => format!("/{}", value),
+                        })
                         .build()
                         .unwrap(),
                 );
-                self.0.call(req).await.into_response()
+                self.inner.call(req).await.into_response()
             }
         }
 
@@ -100,7 +117,13 @@ impl Route {
         );
         self.router.add(
             &format!("{}/*--poem-rest", path),
-            Box::new(Nest(ep.clone())),
+            Box::new(Nest {
+                inner: ep.clone(),
+                prefix: match strip {
+                    true => Some(path.to_string()),
+                    false => None,
+                },
+            }),
         );
         self.router.add(path, Box::new(Root(ep)));
 
